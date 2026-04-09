@@ -1,189 +1,196 @@
 ---
 name: auto-team
-description: Auto-spawn Agent Teams in git worktrees for parallel tasks. Handles preflight, plan, worktree setup, merge, rollback, and cleanup. Trigger for 3+ independent subtasks.
+description: Use when facing 3+ independent subtasks touching different files that would benefit from parallel agent execution in isolated worktrees
 ---
 
-# Auto Team — Agent Teams with Worktree Automation
+# Auto Team
 
-## When to Activate
+Orchestrate parallel agent work using native TeamCreate, TaskCreate, and Agent tools with worktree isolation. Each teammate works in an isolated git worktree; results merge into an integration branch.
 
-Use Agent Teams with worktrees when ALL of these are true:
-- Task has **3 or more independent parts** that can run in parallel
-- Parts touch **different files/modules** (not the same file)
-- Task would take **>30 minutes** sequentially
+## When to Use
+
+ALL must be true:
+- 3+ independent parts that can run in parallel
+- Parts touch different files/modules (no shared-file edits)
+- Task would take >30 min sequentially
 
 Do NOT use when:
-- Task is simple (single file edit, bug fix, small feature)
+- Single file edit, small bug fix, simple feature
 - Parts depend on each other sequentially
-- User explicitly asks for single-session work
-- Repository has uncommitted changes (stash or commit first)
+- User explicitly wants single-session work
+- Dirty working tree (commit or stash first)
 
----
+```dot
+digraph decision {
+  "3+ independent parts?" [shape=diamond];
+  "Touch different files?" [shape=diamond];
+  ">30 min sequential?" [shape=diamond];
+  "Use auto-team" [shape=box];
+  "Use single session" [shape=box];
 
-## Example
-
-**User:** "Build a dashboard with auth, charts, and API endpoints"
-
-**Plan:**
-1. `feature/auth` → login/register pages, JWT middleware
-2. `feature/charts` → recharts components, data visualization
-3. `feature/api` → REST endpoints, database queries
-
-**Worktrees:** `../dashboard-auth`, `../dashboard-charts`, `../dashboard-api`
-
-**Result:** Three teammates work in parallel, merge into `feature/integration-dashboard`, user reviews and merges to main.
+  "3+ independent parts?" -> "Touch different files?" [label="yes"];
+  "3+ independent parts?" -> "Use single session" [label="no"];
+  "Touch different files?" -> ">30 min sequential?" [label="yes"];
+  "Touch different files?" -> "Use single session" [label="no"];
+  ">30 min sequential?" -> "Use auto-team" [label="yes"];
+  ">30 min sequential?" -> "Use single session" [label="no"];
+}
+```
 
 ---
 
 ## Workflow
 
-### Phase 0: Preflight Check (NEVER skip)
-
-Before anything, verify the environment is ready:
+### Phase 0: Preflight (NEVER skip)
 
 ```bash
-# 1. Verify git repo
-git rev-parse --git-dir
-
-# 2. Check for uncommitted changes
-git status --porcelain
-# If dirty → ask user to commit or stash before proceeding
-
-# 3. Verify Agent Teams enabled
-# Check CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1
-
-# 4. Check no conflicting worktrees
-git worktree list
-
-# 5. Record current branch for safety
-git branch --show-current
-# Store as ORIGINAL_BRANCH for rollback
+git rev-parse --git-dir        # Must be a git repo
+git status --porcelain          # Must be clean — if dirty, ask user to commit/stash
+git branch --show-current       # Record as ORIGINAL_BRANCH for rollback
+git worktree list               # Check no conflicts
 ```
 
-If any check fails — stop and inform user what needs to be fixed.
+Stop and inform user if any check fails.
 
-### Phase 1: Plan (ALWAYS do this first)
+### Phase 1: Plan & Approve
 
-1. Analyze the task
-2. Break into independent parts (3-4 max for cost efficiency)
-3. Assign model per teammate based on complexity
-4. Present the plan to user for approval:
+Present plan to user, wait for confirmation:
 
 ```
 I'll split this into [N] parallel tasks:
 
-1. [task] → branch: feature/[name] (Opus — complex logic)
-2. [task] → branch: feature/[name] (Sonnet — implementation)
-3. [task] → branch: feature/[name] (Sonnet — tests)
+1. [task] -> feature/[name] (opus — complex logic)
+2. [task] -> feature/[name] (sonnet — implementation)
+3. [task] -> feature/[name] (sonnet — tests)
 
-Integration branch: feature/integration-[project-name]
-Estimated token usage: ~[N]x single session
+Integration branch: feature/integration-[project]
+Cost: ~[N]x single session tokens
 
 Proceed?
 ```
 
-5. Wait for user confirmation before proceeding
+3-4 teammates max for cost efficiency.
 
-### Phase 2: Setup Integration Branch and Worktrees
+### Phase 2: Create Integration Branch
 
 ```bash
-# Create integration branch (NEVER merge directly to main/master)
 git checkout -b feature/integration-[project-name]
-
-# Create worktrees from integration branch
-git worktree add ../[project]-[task1] feature/[task1]
-git worktree add ../[project]-[task2] feature/[task2]
-git worktree add ../[project]-[task3] feature/[task3]
 ```
 
-Naming convention:
-- Integration branch: `feature/integration-[project-name]`
-- Worktree folder: `../[project-name]-[short-task-name]`
-- Task branch: `feature/[short-task-name]`
+**NEVER** merge directly to main/master.
 
-### Phase 3: Spawn Agent Team
+### Phase 3: Create Team & Tasks
+
+Use native tools — not bash:
 
 ```
-Create a team:
-- Teammate 1 (Opus): work in ../[project]-[task1] on [description]
-- Teammate 2 (Sonnet): work in ../[project]-[task2] on [description]
-- Teammate 3 (Sonnet): work in ../[project]-[task3] on [description]
+TeamCreate({ team_name: "project-name", description: "Brief purpose" })
 
-Rules for all teammates:
-- Commit frequently with clear messages
-- Run tests/build before final commit
-- Do not modify files outside your scope
-- Do not touch package.json unless explicitly told
-- Signal completion when done
+TaskCreate({ description: "Implement auth module" })
+TaskCreate({ description: "Build chart components" })
+TaskCreate({ description: "Create API endpoints" })
 ```
 
-### Phase 4: Auto-Merge (after all teammates complete)
+### Phase 4: Spawn Teammates
+
+Use the **Agent** tool for each teammate. Spawn ALL in a **single message** for true parallelism:
+
+```
+Agent({
+  name: "auth-agent",
+  team_name: "project-name",
+  model: "opus",
+  isolation: "worktree",
+  run_in_background: true,
+  prompt: "You are on team 'project-name'. Your task: implement auth module.
+    1. Check TaskList and claim your task via TaskUpdate (set owner to your name, status to in_progress)
+    2. Implement with clear, frequent commits
+    3. Run tests/build before final commit
+    4. Mark task completed via TaskUpdate
+    5. Do NOT modify files outside your scope"
+})
+
+Agent({
+  name: "charts-agent",
+  team_name: "project-name",
+  model: "sonnet",
+  isolation: "worktree",
+  run_in_background: true,
+  prompt: "..."
+})
+
+Agent({
+  name: "api-agent",
+  team_name: "project-name",
+  model: "sonnet",
+  isolation: "worktree",
+  run_in_background: true,
+  prompt: "..."
+})
+```
+
+Key parameters:
+- `name` — addressable via SendMessage
+- `team_name` — joins the team's shared task list
+- `model` — "opus" | "sonnet" | "haiku"
+- `isolation: "worktree"` — auto-creates isolated git worktree
+- `run_in_background: true` — non-blocking parallel execution
+
+### Phase 5: Monitor
+
+- Messages from teammates are **auto-delivered** — do NOT poll
+- Teammates go **idle between turns** — this is normal, not an error
+- Use **SendMessage** to communicate with teammates by `name`
+- Use **TaskList** to check overall progress
+- Idle teammates can receive messages — sending wakes them up
+
+### Phase 6: Merge
+
+After all teammates complete, their worktree branches are returned in the Agent result. Worktrees with no changes are auto-cleaned.
 
 ```bash
-# Return to main working directory
-cd [original-project-dir]
-
-# Ensure we're on integration branch
 git checkout feature/integration-[project-name]
 
-# Merge each branch one by one
-git merge feature/[task1] --no-edit
-# Verify build: npm run build or npm test
-# If fails → rollback this merge, report to user
+git merge [branch-from-agent-1] --no-edit
+# Run build/tests — if conflict: git merge --abort, ask user
 
-git merge feature/[task2] --no-edit
-# Verify build again
+git merge [branch-from-agent-2] --no-edit
+# Verify again
 
-git merge feature/[task3] --no-edit
-# Final verification: npm run build && npm test
+git merge [branch-from-agent-3] --no-edit
+# Final: build + tests
 ```
 
-### Phase 5: Cleanup (ALWAYS do this)
+**NEVER auto-resolve merge conflicts.** Abort and ask the user.
+
+### Phase 7: Cleanup
+
+1. Shutdown teammates: `SendMessage({ to: "agent-name", message: { type: "shutdown_request" } })`
+2. Wait for all to shut down
+3. Delete team: `TeamDelete()` (fails if teammates still active)
+4. Prune worktrees and branches:
 
 ```bash
-# Remove worktrees
-git worktree remove ../[project]-[task1]
-git worktree remove ../[project]-[task2]
-git worktree remove ../[project]-[task3]
-
-# Delete merged branches
-git branch -d feature/[task1]
-git branch -d feature/[task2]
-git branch -d feature/[task3]
-
-# Prune any stale worktree references
 git worktree prune
+git branch -d feature/[task-branches]
 ```
 
-### Phase 6: Report
-
-After cleanup, report to user:
+### Phase 8: Report
 
 ```
-✅ Team completed. Summary:
+Team completed. Summary:
 
 Integration branch: feature/integration-[project-name]
 
-- [task1] (Opus): [what was done, files changed]
-- [task2] (Sonnet): [what was done, files changed]
-- [task3] (Sonnet): [what was done, files changed]
+- auth-agent (opus): [what was done, files changed]
+- charts-agent (sonnet): [what was done, files changed]
+- api-agent (sonnet): [what was done, files changed]
 
-Build: ✅ pass
-Tests: ✅ pass (N/N)
+Build: pass | Tests: pass (N/N)
 Branches merged and cleaned up.
 
-→ Ready to merge into main when you approve.
+Ready to merge into main when you approve.
 ```
-
----
-
-## Safety Rules
-
-- **NEVER** merge directly into `main` or `master`
-- Always create `feature/integration-*` branch first
-- Merge teammates into integration branch
-- User decides when to merge integration → main
-- Record `ORIGINAL_BRANCH` at start for emergency rollback
 
 ---
 
@@ -191,63 +198,38 @@ Branches merged and cleaned up.
 
 | Problem | Action |
 |---------|--------|
-| Uncommitted changes at start | Stop. Ask user to commit or stash. |
-| Agent Teams not enabled | Stop. Tell user to set `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` |
-| Worktree creation fails | Branch may exist. `git branch -D` if stale, or pick different name. |
-| Merge conflict (1-2 files) | Attempt auto-resolution. |
-| Merge conflict (3+ files) | `git merge --abort`. Stop and ask user. |
-| Build fails after merge | `git revert -m 1 HEAD`. Report which merge broke it. |
-| All merges fail | `git merge --abort` and `git checkout ORIGINAL_BRANCH`. Report. |
-| Test failure after merge | Report which merge broke tests, offer to revert. |
-| Teammate idle >5 min | Reassign task or complete from lead session. |
-| Folder manually deleted | Run `git worktree prune` to clean stale refs. |
+| Dirty working tree | Stop. Ask user to commit or stash |
+| Worktree name conflict | Pick different name or `git worktree prune` stale refs |
+| Merge conflict | `git merge --abort`. Ask user — never auto-resolve |
+| Build fails after merge | `git revert -m 1 HEAD`. Report which merge broke it |
+| Test failure after merge | Report which merge broke tests, offer to revert |
+| All merges fail | `git merge --abort`, `git checkout ORIGINAL_BRANCH`. Report |
 
 ### Emergency Rollback
 
-If everything goes wrong:
-
 ```bash
-# Abort any in-progress merge
-git merge --abort
-
-# Return to original branch
+git merge --abort 2>/dev/null
 git checkout [ORIGINAL_BRANCH]
-
-# Remove all worktrees
-git worktree remove ../[project]-[task1] --force
-git worktree remove ../[project]-[task2] --force
-git worktree remove ../[project]-[task3] --force
-
-# Delete integration and task branches
-git branch -D feature/integration-[project-name]
-git branch -D feature/[task1]
-git branch -D feature/[task2]
-git branch -D feature/[task3]
-
-# Clean up
 git worktree prune
+git branch -D feature/integration-[project-name]
+git branch -D feature/[task1] feature/[task2] feature/[task3]
 ```
 
 ---
 
-## Model Selection per Teammate
+## Model Selection
 
-| Task Type | Model | Why |
-|-----------|-------|-----|
-| Architecture, API design, complex logic | Opus | Needs deep reasoning |
-| Component implementation, features | Sonnet | Good balance speed/quality |
-| Tests, linting, formatting | Sonnet or Haiku | Straightforward tasks |
-| Documentation, README | Sonnet | Clear writing |
-
-Specify in spawn prompt: "Use Sonnet for this teammate"
+| Task Type | `model` value |
+|-----------|---------------|
+| Architecture, complex logic | `"opus"` |
+| Features, components, docs | `"sonnet"` |
+| Tests, formatting, simple tasks | `"haiku"` |
 
 ---
 
-## Token Optimization
+## Cost Control
 
-- Keep teammate prompts short and focused — one clear task per teammate
-- Limit team to **3-4 teammates max** for cost efficiency
-- 3 teammates ≈ 3-4x tokens of a single session
-- Compact lead session after spawning teammates
-- Use Sonnet/Haiku for simple teammates to reduce cost
-- Do NOT use Agent Teams for tasks a single session handles in <30 min
+- 3-4 teammates max
+- One focused task per teammate
+- Use sonnet/haiku for straightforward work
+- Don't use for tasks a single session handles in <30 min
